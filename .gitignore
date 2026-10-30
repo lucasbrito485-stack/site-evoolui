@@ -1,0 +1,19 @@
+data/
+__pycache__/
+*.pyc
+.env
+
+# Runtime data, secrets and local exports must never be committed.
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.pem
+*.key
+private_files/
+uploads/
+backups/
+*.zip

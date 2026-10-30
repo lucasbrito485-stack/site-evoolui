@@ -1,0 +1,62 @@
+// Optional browser integration test; use a separate demo database and FFmpeg fixture.
+const {chromium}=require('playwright');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const url=process.env.EVOOLUI_TEST_URL||'http://127.0.0.1:8001';
+const password=process.env.EVOOLUI_DEMO_PASSWORD;
+if(!password)throw Error('Defina EVOOLUI_DEMO_PASSWORD para o banco de demonstração.');
+(async()=>{
+ const browser=await chromium.launch({headless:true,...(process.env.EVOOLUI_CHROMIUM?{executablePath:process.env.EVOOLUI_CHROMIUM}:{})});
+ const errors=[];
+ const admin=await browser.newPage({viewport:{width:1440,height:1000}});
+ const client=await browser.newPage({viewport:{width:1280,height:900}});
+ for(const p of [admin,client])p.on('pageerror',e=>errors.push(e.message));
+ async function login(p,email){await p.goto(url);await p.getByLabel('E-mail',{exact:true}).fill(email);await p.getByLabel('Senha',{exact:true}).fill(password);await p.getByRole('button',{name:/Entrar na plataforma/}).click();await p.getByRole('heading',{name:/Tudo pronto/}).waitFor();}
+ async function openFiles(p){await p.getByRole('button',{name:'Arquivos',exact:true}).click();await p.locator('.file-summary').waitFor();}
+ async function upload(p,name,version=false){await p.getByRole('button',{name:version?'Enviar nova versão':'Enviar arquivos',exact:true}).click();await p.locator('#asset-input').setInputFiles({name,mimeType:'video/mp4',buffer:fs.readFileSync('/tmp/evoolui-test-video.mp4')});await p.getByRole('button',{name:version?'Enviar nova versão':'Enviar arquivos',exact:true}).last().click();await p.waitForFunction(()=>!document.querySelector('dialog').open);await p.locator('.file-summary').waitFor();}
+ const name='Vídeo de teste fictício '+Date.now()+'.mp4';
+ await login(admin,'admin@evoolui.test');await openFiles(admin);
+ await admin.getByLabel('Empresa dos arquivos').selectOption('1');await upload(admin,name);
+ await admin.getByRole('button',{name:'Abrir '+name,exact:true}).waitFor();
+ await admin.screenshot({path:'/tmp/evoolui-files-desktop.png',fullPage:true});
+ await login(client,'cliente@evoolui.test');await openFiles(client);
+ assert.equal(await client.getByLabel('Empresa dos arquivos').locator('option').count(),1);
+ assert.equal(await client.getByRole('button',{name:'Enviar arquivos',exact:true}).count(),0);
+ await client.getByRole('button',{name:'Abrir '+name,exact:true}).click();
+ await client.locator('video').evaluate(async v=>{await v.play();});
+ await client.waitForFunction(()=>document.querySelector('video').currentTime>0.2);
+ const downloadPromise=client.waitForEvent('download');await client.getByRole('link',{name:'Baixar arquivo',exact:true}).click();const download=await downloadPromise;assert.equal(download.suggestedFilename(),name);assert.equal(await download.failure(),null);
+ await client.getByLabel('Observações',{exact:true}).fill('Ajustar o início do vídeo.');
+ await client.getByRole('button',{name:'Solicitar alterações',exact:true}).click();await client.waitForFunction(()=>!document.querySelector('dialog').open);
+ await client.getByText('Alterações solicitadas',{exact:true}).first().waitFor();
+ await admin.getByRole('button',{name:'Atualizar',exact:true}).click();
+ await admin.getByRole('button',{name:'Abrir '+name,exact:true}).click();
+ await admin.getByText(/Ajustar o início do vídeo/).waitFor();
+ await upload(admin,'Vídeo revisado fictício '+Date.now()+'.mp4',true);
+ await client.getByRole('button',{name:'Atualizar',exact:true}).click();
+ await client.locator('.file-cover').first().click();
+ await client.getByRole('button',{name:'Aprovar conteúdo',exact:true}).click();await client.waitForFunction(()=>!document.querySelector('dialog').open);
+ await client.getByText('Aprovado',{exact:true}).first().waitFor();
+ const denied=await client.request.get(url+'/api/clients/2/files');assert.equal(denied.status(),404);
+ await client.reload();await openFiles(client);await client.getByText('Aprovado',{exact:true}).first().waitFor();
+ await client.setViewportSize({width:390,height:844});
+ assert.equal(await client.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+ await client.screenshot({path:'/tmp/evoolui-files-mobile.png',fullPage:true});
+ await client.getByRole('button',{name:'Agendamentos',exact:true}).click();await client.getByRole('button',{name:'Solicitar gravação',exact:true}).click();
+ const day=new Date();day.setDate(day.getDate()+5);while(day.getDay()===0||day.getDay()===6)day.setDate(day.getDate()+1);const iso=day.toISOString().slice(0,10);
+ await client.getByLabel('Dia da gravação').fill(iso);await client.getByLabel('Dia da gravação').dispatchEvent('change');await client.getByLabel('Horários disponíveis',{exact:true}).waitFor();
+ await client.getByRole('button',{name:'Solicitar horário',exact:true}).click();await client.waitForFunction(()=>!document.querySelector('dialog').open);
+ await client.getByText('Aguardando confirmação',{exact:true}).first().waitFor();
+ await admin.getByRole('button',{name:'Agendamentos',exact:true}).click();await admin.getByRole('button',{name:'Confirmar',exact:true}).first().click();await admin.getByText('Confirmado',{exact:true}).first().waitFor();
+ await admin.getByRole('button',{name:'Tarefas',exact:false}).first().click();await admin.getByRole('cell',{name:/Gravação · Aurora/}).first().waitFor();
+ await admin.getByRole('button',{name:'Financeiro',exact:true}).click();await admin.getByRole('heading',{name:'Contratos e mensalidades',exact:true}).waitFor();
+ await admin.getByRole('button',{name:'Novo lançamento',exact:true}).click();
+ await admin.getByLabel('Descrição',{exact:true}).fill('Despesa fictícia do navegador');await admin.getByLabel('Valor (R$)',{exact:true}).fill('129.90');await admin.getByLabel('Tipo',{exact:true}).selectOption('despesa');
+ await admin.getByRole('button',{name:'Salvar registro',exact:true}).click();await admin.waitForFunction(()=>!document.querySelector('dialog').open);await admin.getByRole('cell',{name:/Despesa fictícia do navegador/}).first().waitFor();
+ const csvPromise=admin.waitForEvent('download');await admin.getByRole('button',{name:'Exportar CSV'}).click();assert.equal(await (await csvPromise).failure(),null);
+ await client.getByRole('button',{name:'Ver alertas',exact:true}).click();await client.getByRole('heading',{name:'As novidades da sua operação.'}).waitFor();
+ assert.equal(await client.getByRole('button',{name:'Financeiro',exact:true}).count(),0);
+ assert.deepEqual(errors,[]);
+ console.log('PASS: private video upload/playback/download; changes + new version + approval; client isolation; persistence; mobile; recording request/confirmation/task; finance entry/CSV; notifications; no JS errors.');
+ await browser.close();
+})().catch(e=>{console.error(e);process.exit(1)});
